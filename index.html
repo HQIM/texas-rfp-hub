@@ -1,0 +1,783 @@
+import { useState, useCallback, useRef, useEffect, useMemo } from "react";
+
+// ═══════════════════════════════════════════════════════════════
+// SAFAL CAPABILITY MATCHING ENGINE
+// ═══════════════════════════════════════════════════════════════
+const SAFAL_CAPABILITIES = {
+  HQIM: { label: "HQIM / Instructional Materials", keywords: ["instructional materials","curriculum","HQIM","textbook","adoption","high-quality","core curriculum","supplemental materials","curriculum review","materials review","instructional resources","TEKS alignment","standards-aligned"], color: "#1B4965" },
+  PD: { label: "Professional Development", keywords: ["professional development","training","coaching","teacher training","professional learning","capacity building","workshops","PD provider","educator training","leadership development","mentoring","teacher retention"], color: "#2D6A4F" },
+  EVAL: { label: "Program Evaluation / Data", keywords: ["evaluation","program evaluation","data analytics","assessment","data analysis","research","impact","performance monitoring","survey","statistical","metrics","outcomes","continuous improvement"], color: "#7B2D8E" },
+  TA: { label: "Technical Assistance", keywords: ["technical assistance","support services","implementation support","help desk","communication","TA provider","consulting","advisory","strategic planning"], color: "#C44536" },
+  GRANTS: { label: "Grants / Program Mgmt", keywords: ["grant management","program management","project management","fiscal","compliance","federal funds","grant writing","ESSER","Title I","Title II","Title III","Title IV","IDEA","fund administration"], color: "#E07A2F" },
+  WFD: { label: "Workforce / CTE", keywords: ["workforce","career","CTE","career and technical","apprenticeship","work-based learning","industry partnership","career pathways","employer engagement","sector strategy","P-TECH","college readiness"], color: "#457B9D" },
+  TECH: { label: "EdTech / Digital Learning", keywords: ["technology","edtech","digital learning","e-learning","LMS","software","platform","online learning","AI","artificial intelligence","virtual","digital transformation"], color: "#6C757D" },
+  SPED: { label: "Special Ed / Student Svcs", keywords: ["special education","SPED","IEP","504","dyslexia","intervention","RTI","MTSS","behavior","counseling","mental health","SEL","social emotional","at-risk"], color: "#E76F51" },
+  IMPROVE: { label: "School Improvement", keywords: ["school improvement","strategic planning","turnaround","transformation","needs assessment","continuous improvement","accreditation","accountability","redesign"], color: "#264653" },
+};
+
+function matchCapabilities(text) {
+  const lower = (text || "").toLowerCase();
+  const matches = [];
+  for (const [key, cap] of Object.entries(SAFAL_CAPABILITIES)) {
+    const ct = cap.keywords.filter(kw => lower.includes(kw.toLowerCase())).length;
+    if (ct > 0) matches.push({ key, ...cap, strength: ct });
+  }
+  return matches.sort((a, b) => b.strength - a.strength);
+}
+
+function computeScore(caps) {
+  if (!caps.length) return 0;
+  return Math.min(100, Math.round((caps.reduce((s,c)=>s+c.strength,0)/3)*25 + caps.length*15));
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PROCUREMENT PORTAL DATABASE
+// ═══════════════════════════════════════════════════════════════
+
+const PROCUREMENT_PORTALS = [
+  { name: "Texas ESBD (Electronic State Business Daily)", url: "https://www.txsmartbuy.gov/esbd", type: "state", desc: "All state agency bids $25K+. Filter by TEA and education-related solicitations.", priority: true },
+  { name: "TEA Contracts & Purchasing (Bonfire Portal)", url: "https://tea.texas.gov/about-tea/agency-finances/contracts-and-purchasing", type: "state", desc: "TEA's own procurement portal — over 400 contracts worth ~$1B. Uses Euna/Bonfire for e-bidding.", priority: true },
+  { name: "TEA Current Contracts List", url: "https://tea.texas.gov/about-tea/agency-finances/contracts-and-purchasing/contract-opportunities", type: "state", desc: "List of all active TEA contracts updated regularly.", priority: true },
+  { name: "BuyBoard (TASB Purchasing Cooperative)", url: "https://www.buyboard.com/texas", type: "cooperative", desc: "Texas's largest education purchasing cooperative. Covers schools, cities, counties. Free membership. Vendor bids at bids@buyboard.com.", priority: true },
+  { name: "TIPS/TAPS (Region 8 ESC)", url: "https://www.tips-usa.com", type: "cooperative", desc: "National cooperative run by Region 8 ESC. Open bids at tips.ionwave.net. 10,000+ members including K-12, charters, colleges.", priority: true },
+  { name: "Choice Partners (HCDE / Region 4)", url: "https://www.choicepartners.org", type: "cooperative", desc: "Harris County Dept of Education cooperative. Free membership. Covers education, govt, nonprofits nationwide.", priority: true },
+  { name: "Region 4 ESC Solicitations (OMNIA Partners)", url: "https://region4esc.ionwave.net", type: "cooperative", desc: "Region 4 ESC's bidding system for direct and OMNIA Partners solicitations. Register free for notifications.", priority: true },
+  { name: "Equalis Group", url: "https://equalisgroup.org/current-solicitations/", type: "cooperative", desc: "National cooperative with lead agencies including Texas ESCs. Uses Bonfire for e-bidding.", priority: false },
+  { name: "OMNIA Partners Solicitations", url: "https://www.omniapartners.com/get-started/solicitations", type: "cooperative", desc: "Partners with Region 4 and Region 14 ESC for national contracts.", priority: false },
+  { name: "Sourcewell (fmr. NJPA)", url: "https://www.sourcewell-mn.gov/cooperative-purchasing", type: "cooperative", desc: "National cooperative. Many TX districts are members.", priority: false },
+  { name: "DIR Cooperative Contracts (IT)", url: "https://dir.texas.gov/cooperative-contracts", type: "state", desc: "Dept of Information Resources — all state IT procurement. EdTech opportunities.", priority: false },
+  { name: "Texas SmartBuy Membership", url: "https://comptroller.texas.gov/purchasing/members/", type: "state", desc: "State cooperative purchasing program. Access to state contracts for local govt buyers.", priority: false },
+  { name: "Texas Comptroller CMBL", url: "https://comptroller.texas.gov/purchasing/vendor/", type: "state", desc: "Centralized Master Bidders List — register to receive state bid opportunities. $70/yr.", priority: false },
+  { name: "H-GAC Procurement", url: "https://www.h-gac.com/procurement", type: "cooperative", desc: "Houston-Galveston Area Council procurement portal. Covers regional education entities.", priority: false },
+  { name: "HCDE eBid System", url: "https://www.hcde-texas.org/financial-transparency/contracts-procurement/procurement-services", type: "cooperative", desc: "Harris County Dept of Education e-procurement. Includes PD speaker solicitations.", priority: false },
+  { name: "SAM.gov", url: "https://sam.gov", type: "federal", desc: "Federal procurement — ED, DOL, HHS opportunities that flow to TX districts.", priority: false },
+  { name: "Grants.gov", url: "https://www.grants.gov", type: "federal", desc: "Federal grant opportunities — education and workforce.", priority: false },
+  { name: "FindRFP", url: "https://www.findrfp.com", type: "aggregator", desc: "Third-party RFP aggregator covering TX school districts and government.", priority: false },
+  { name: "GovWin / Deltek", url: "https://iq.govwin.com", type: "aggregator", desc: "Government contract intelligence platform (paid).", priority: false },
+  { name: "RFPSchoolWatch", url: "https://www.rfpschoolwatch.com/texas-schools/", type: "aggregator", desc: "Dedicated K-12 school bid aggregator with Texas agency coverage.", priority: false },
+  { name: "BidNet Direct (Texas)", url: "https://www.bidnetdirect.com/texas/solicitations/open-bids", type: "aggregator", desc: "Government bid aggregator — covers ESCs, ISDs, and state agencies.", priority: false },
+  { name: "GovDirections (Texas)", url: "https://govdirections.com/bids/sitemap/43/Texas/", type: "aggregator", desc: "Government bid classification service with daily email alerts.", priority: false },
+  { name: "Edge Public Solicitations", url: "https://edgepublic.com/rfps/", type: "cooperative", desc: "National education cooperative — uses Bonfire for e-bidding. K-12, government, higher ed.", priority: false },
+];
+
+// ═══════════════════════════════════════════════════════════════
+// BONFIRE (EUNA PROCUREMENT) PORTALS
+// Many TX entities use Bonfire/Euna for e-procurement. These are
+// direct links to their open opportunities pages.
+// ═══════════════════════════════════════════════════════════════
+const BONFIRE_PORTALS = [
+  // State Agencies
+  { name: "Texas Education Agency (TEA)", url: "https://tea.bonfirehub.com/portal", type: "state", priority: true, note: "400+ contracts worth ~$1B. All TEA RFPs require electronic submission via Bonfire." },
+  { name: "Texas Workforce Commission (TWC)", url: "https://twc-texas-gov.bonfirehub.com/portal/?tab=openOpportunities", type: "state", priority: true, note: "Adult Ed, JET grants, workforce programs. Includes ISD partnership opportunities." },
+  // ESCs on Bonfire
+  { name: "Region 5 ESC (Beaumont)", url: "https://esc5.bonfirehub.com/portal/?tab=openOpportunities", type: "esc", priority: false, note: "Southeast Texas Purchasing Cooperative (SETXPC) solicitations." },
+  { name: "Region 10 ESC (Richardson)", url: "https://region10.bonfirehub.com/portal/?tab=openOpportunities", type: "esc", priority: true, note: "EdTech Exchange cooperative. Recent SEL software, HQIM RFPs. Dallas metro." },
+  // Major ISDs on Bonfire
+  { name: "Dallas ISD", url: "https://dallasisd.bonfirehub.com/portal", type: "isd", priority: true, note: "145K students, $2.8B budget. All procurement through Bonfire." },
+  { name: "Austin ISD", url: "https://austinisd.bonfirehub.com/portal/?tab=openOpportunities", type: "isd", priority: true, note: "75K students, $1.5B budget. 41 schools rated D/F — high improvement need." },
+  { name: "San Antonio ISD", url: "https://saisd.bonfirehub.com/portal/?tab=openOpportunities", type: "isd", priority: true, note: "46K students, $850M budget." },
+  { name: "Fort Bend ISD", url: "https://fortbendisd.bonfirehub.com/portal/?tab=openOpportunities", type: "isd", priority: true, note: "78K students, $960M budget. Houston metro." },
+  { name: "Laredo ISD", url: "https://laredoisd.bonfirehub.com/portal/?tab=openOpportunities", type: "isd", priority: false, note: "23K students, $310M budget." },
+  { name: "Eanes ISD", url: "https://eanesisd.bonfirehub.com/portal", type: "isd", priority: false, note: "8K students, Austin metro." },
+  { name: "Comal ISD", url: "https://comalisd.bonfirehub.com/portal", type: "isd", priority: false, note: "26K students, $350M budget. New Braunfels/San Antonio area." },
+  // Higher Ed (sometimes partner on K-12 initiatives)
+  { name: "UT Austin", url: "https://utexas.bonfirehub.com/portal/?tab=openOpportunities", type: "higher_ed", priority: false, note: "Education research and partnership opportunities." },
+  { name: "UT Tyler", url: "https://uttyler.bonfirehub.com/portal/?tab=openOpportunities", type: "higher_ed", priority: false, note: "East Texas." },
+  { name: "UT Rio Grande Valley", url: "https://utrgv.bonfirehub.com/portal", type: "higher_ed", priority: false, note: "RGV region — strong K-12 pipeline partnerships." },
+  { name: "Tarrant County College", url: "https://tccd.bonfirehub.com/portal/?tab=openOpportunities", type: "higher_ed", priority: false, note: "Fort Worth area community college." },
+];
+
+// ═══════════════════════════════════════════════════════════════
+// EDUCATION SERVICE CENTERS — ALL 20
+// ═══════════════════════════════════════════════════════════════
+const ESC_DATA = [
+  { id:1, city:"Edinburg", url:"https://www.esc1.net", procurement:"https://www.esc1.net/services/operations/purchasing", bidSystem:"Region One Purchasing Cooperative", counties:"Hidalgo, Cameron, Starr, Willacy, Jim Hogg, Brooks, Kenedy, Zapata", districts:38 },
+  { id:2, city:"Corpus Christi", url:"https://www.esc2.net", procurement:"https://www.esc2.net/purchasing", bidSystem:null, counties:"Nueces, San Patricio, Kleberg, Jim Wells, Bee, Live Oak, McMullen, Duval, Refugio, Aransas", districts:42 },
+  { id:3, city:"Victoria", url:"https://www.esc3.net", procurement:"https://www.esc3.net/purchasing", bidSystem:null, counties:"Victoria, Calhoun, Jackson, Lavaca, DeWitt, Goliad, Gonzales, Wharton, Matagorda", districts:40 },
+  { id:4, city:"Houston", url:"https://www.esc4.net", procurement:"https://esc4.net/current_solicitations/", bidSystem:"https://region4esc.ionwave.net", counties:"Harris, Fort Bend, Waller, Chambers, Liberty, Galveston, Brazoria", districts:53, note:"Largest ESC. Hosts Choice Partners & OMNIA Partners." },
+  { id:5, city:"Beaumont", url:"https://www.esc5.net", procurement:"https://www.esc5.net/purchasing", bidSystem:null, counties:"Jefferson, Orange, Hardin, Tyler, Jasper, Newton, Polk, San Jacinto", districts:38 },
+  { id:6, city:"Huntsville", url:"https://www.esc6.net", procurement:"https://www.esc6.net/purchasing", bidSystem:null, counties:"Walker, Montgomery, Grimes, Madison, Leon, Houston, Trinity, San Jacinto, Anderson", districts:51 },
+  { id:7, city:"Kilgore", url:"https://www.esc7.net", procurement:"https://www.esc7.net/purchasing", bidSystem:null, counties:"Smith, Gregg, Rusk, Cherokee, Henderson, Van Zandt, Wood, Upshur", districts:95 },
+  { id:8, city:"Mt. Pleasant", url:"https://www.esc8.net", procurement:"https://www.esc8.net/purchasing", bidSystem:"https://tips.ionwave.net", counties:"Titus, Morris, Cass, Bowie, Red River, Delta, Hopkins, Franklin, Camp, Marion, Harrison", districts:48, note:"Hosts TIPS/TAPS national cooperative." },
+  { id:9, city:"Wichita Falls", url:"https://www.esc9.net", procurement:"https://www.esc9.net/purchasing", bidSystem:null, counties:"Wichita, Clay, Archer, Young, Jack, Montague, Cooke, Wise, Palo Pinto", districts:52 },
+  { id:10, city:"Richardson", url:"https://www.region10.org", procurement:"https://www.region10.org/purchasing", bidSystem:null, counties:"Dallas, Rockwall, Kaufman, Ellis, Navarro, Hunt, Collin (shared)", districts:80, note:"Covers Dallas metro. Major PD & HQIM contracts." },
+  { id:11, city:"Fort Worth", url:"https://www.esc11.net", procurement:"https://www.esc11.net/purchasing", bidSystem:null, counties:"Tarrant, Parker, Hood, Somervell, Johnson, Erath, Eastland", districts:76, note:"Covers Fort Worth metro area." },
+  { id:12, city:"Waco", url:"https://www.esc12.net", procurement:"https://www.esc12.net/purchasing", bidSystem:null, counties:"McLennan, Hill, Limestone, Falls, Bell, Coryell, Bosque, Hamilton, Mills", districts:74 },
+  { id:13, city:"Austin", url:"https://www.esc13.net", procurement:"https://www.esc13.net/purchasing", bidSystem:null, counties:"Travis, Williamson, Hays, Bastrop, Caldwell, Blanco, Burnet, Llano, Lee, Fayette", districts:60, note:"Austin metro. Strong HQIM & school improvement focus." },
+  { id:14, city:"Abilene", url:"https://www.esc14.net", procurement:"https://www.esc14.net/purchasing", bidSystem:"https://omniapartners.bonfirehub.com", counties:"Taylor, Jones, Callahan, Coleman, Brown, Comanche, Stephens, Shackelford", districts:45, note:"Hosts OMNIA/Equalis solicitations." },
+  { id:15, city:"San Angelo", url:"https://www.esc15.net", procurement:"https://www.esc15.net/purchasing", bidSystem:null, counties:"Tom Green, Concho, McCulloch, Menard, Schleicher, Sutton, Crockett, Irion, Sterling, Reagan", districts:30 },
+  { id:16, city:"Amarillo", url:"https://www.esc16.net", procurement:"https://www.esc16.net/purchasing", bidSystem:null, counties:"Potter, Randall, Carson, Armstrong, Deaf Smith, Oldham, Moore, Hutchinson, Roberts, Hemphill", districts:62 },
+  { id:17, city:"Lubbock", url:"https://www.esc17.net", procurement:"https://www.esc17.net/purchasing", bidSystem:null, counties:"Lubbock, Hale, Floyd, Crosby, Dickens, Garza, Lynn, Terry, Yoakum, Gaines, Dawson", districts:38 },
+  { id:18, city:"Midland", url:"https://www.esc18.net", procurement:"https://www.esc18.net/purchasing", bidSystem:null, counties:"Midland, Ector, Andrews, Martin, Howard, Glasscock, Crane, Upton, Ward, Winkler, Loving, Reeves, Pecos", districts:29 },
+  { id:19, city:"El Paso", url:"https://www.esc19.net", procurement:"https://www.esc19.net/purchasing", bidSystem:"Allied States Cooperative", counties:"El Paso, Hudspeth, Culberson, Jeff Davis, Presidio, Brewster", districts:13, note:"Hosts Allied States national cooperative." },
+  { id:20, city:"San Antonio", url:"https://www.esc20.net", procurement:"https://www.esc20.net/purchasing", bidSystem:null, counties:"Bexar, Comal, Guadalupe, Wilson, Atascosa, Medina, Bandera, Kendall, Kerr, Uvalde, Real, Edwards, Val Verde, Kinney, Maverick, Zavala, Frio, Dimmit, Webb, LaSalle", districts:57, note:"San Antonio metro. Large SPED & bilingual programs." },
+];
+
+// ═══════════════════════════════════════════════════════════════
+// TEXAS ISDs — COMPREHENSIVE LIST (Top 200+ by enrollment)
+// Most districts post RFPs under their website /departments/purchasing or /vendors
+// ═══════════════════════════════════════════════════════════════
+const DISTRICTS = [
+  // ESC 1 - Rio Grande Valley
+  { name:"Edinburg CISD", esc:1, enrollment:33000, budget:"$420M", url:"https://www.ecisd.us", purchasing:"/departments/purchasing" },
+  { name:"McAllen ISD", esc:1, enrollment:22000, budget:"$310M", url:"https://www.mcallenisd.org", purchasing:"/departments/purchasing" },
+  { name:"Pharr-San Juan-Alamo ISD", esc:1, enrollment:32000, budget:"$400M", url:"https://www.psjaisd.us", purchasing:"/departments/purchasing" },
+  { name:"Brownsville ISD", esc:1, enrollment:36000, budget:"$460M", url:"https://www.bisd.us", purchasing:"/departments/purchasing" },
+  { name:"Mission CISD", esc:1, enrollment:15000, budget:"$210M", url:"https://www.mcisd.org", purchasing:"/departments/purchasing" },
+  { name:"La Joya ISD", esc:1, enrollment:27000, budget:"$350M", url:"https://www.lajoyaisd.com", purchasing:"/departments/purchasing" },
+  { name:"Donna ISD", esc:1, enrollment:14000, budget:"$190M", url:"https://www.donnaisd.net", purchasing:"/departments/purchasing" },
+  { name:"Weslaco ISD", esc:1, enrollment:15500, budget:"$210M", url:"https://www.wisd.us", purchasing:"/departments/purchasing" },
+  { name:"Harlingen CISD", esc:1, enrollment:18000, budget:"$250M", url:"https://www.hcisd.org", purchasing:"/departments/purchasing" },
+  { name:"Los Fresnos CISD", esc:1, enrollment:10500, budget:"$150M", url:"https://www.lfcisd.net", purchasing:"/departments/purchasing" },
+  // ESC 2 - Corpus Christi
+  { name:"Corpus Christi ISD", esc:2, enrollment:35000, budget:"$470M", url:"https://www.ccisd.us", purchasing:"/departments/purchasing" },
+  { name:"Calallen ISD", esc:2, enrollment:5000, budget:"$75M", url:"https://www.calallen.org", purchasing:"/departments/purchasing" },
+  { name:"Flour Bluff ISD", esc:2, enrollment:6000, budget:"$85M", url:"https://www.flourbluffisd.net", purchasing:"/departments/purchasing" },
+  { name:"Alice ISD", esc:2, enrollment:5000, budget:"$70M", url:"https://www.aliceisd.net", purchasing:"/departments/purchasing" },
+  // ESC 3 - Victoria
+  { name:"Victoria ISD", esc:3, enrollment:13000, budget:"$180M", url:"https://www.visd.net", purchasing:"/departments/purchasing" },
+  // ESC 4 - Houston
+  { name:"Houston ISD", esc:4, enrollment:187000, budget:"$4.2B", url:"https://www.houstonisd.org", purchasing:"/departments/business-operations/procurement", priority:true },
+  { name:"Cypress-Fairbanks ISD", esc:4, enrollment:117000, budget:"$1.4B", url:"https://www.cfisd.net", purchasing:"/departments/purchasing", priority:true },
+  { name:"Katy ISD", esc:4, enrollment:92000, budget:"$1.2B", url:"https://www.katyisd.org", purchasing:"/departments/purchasing", priority:true },
+  { name:"Fort Bend ISD", esc:4, enrollment:78000, budget:"$960M", url:"https://www.fortbendisd.com", purchasing:"/departments/purchasing", priority:true },
+  { name:"Aldine ISD", esc:4, enrollment:67000, budget:"$900M", url:"https://www.aldineisd.org", purchasing:"/departments/purchasing", priority:true },
+  { name:"Spring ISD", esc:4, enrollment:33000, budget:"$430M", url:"https://www.springisd.org", purchasing:"/departments/purchasing" },
+  { name:"Pasadena ISD", esc:4, enrollment:52000, budget:"$650M", url:"https://www1.pasadenaisd.org", purchasing:"/departments/purchasing" },
+  { name:"Humble ISD", esc:4, enrollment:47000, budget:"$600M", url:"https://www.humbleisd.net", purchasing:"/departments/purchasing" },
+  { name:"Galena Park ISD", esc:4, enrollment:22000, budget:"$300M", url:"https://www.galenaparkisd.com", purchasing:"/departments/purchasing" },
+  { name:"Alief ISD", esc:4, enrollment:45000, budget:"$550M", url:"https://www.aliefisd.net", purchasing:"/departments/purchasing" },
+  { name:"Spring Branch ISD", esc:4, enrollment:35000, budget:"$520M", url:"https://www.springbranchisd.com", purchasing:"/departments/purchasing" },
+  { name:"Clear Creek ISD", esc:4, enrollment:42000, budget:"$530M", url:"https://www.ccisd.net", purchasing:"/departments/purchasing" },
+  { name:"Lamar CISD", esc:4, enrollment:38000, budget:"$480M", url:"https://www.lcisd.org", purchasing:"/departments/purchasing" },
+  { name:"Galveston ISD", esc:4, enrollment:7000, budget:"$110M", url:"https://www.gisd.org", purchasing:"/departments/purchasing" },
+  { name:"Pearland ISD", esc:4, enrollment:22000, budget:"$290M", url:"https://www.pearlandisd.org", purchasing:"/departments/purchasing" },
+  { name:"Goose Creek CISD", esc:4, enrollment:23000, budget:"$310M", url:"https://www.gccisd.net", purchasing:"/departments/purchasing" },
+  { name:"Tomball ISD", esc:4, enrollment:20000, budget:"$270M", url:"https://www.tomballisd.net", purchasing:"/departments/purchasing" },
+  { name:"Channelview ISD", esc:4, enrollment:10000, budget:"$150M", url:"https://www.channelview.isd.esc4.net", purchasing:"/departments/purchasing" },
+  { name:"Sheldon ISD", esc:4, enrollment:12000, budget:"$170M", url:"https://www.sheldonisd.com", purchasing:"/departments/purchasing" },
+  { name:"Dickinson ISD", esc:4, enrollment:12000, budget:"$170M", url:"https://www.dickinsonisd.org", purchasing:"/departments/purchasing" },
+  // ESC 5 - Beaumont
+  { name:"Beaumont ISD", esc:5, enrollment:16000, budget:"$250M", url:"https://www.bmtisd.com", purchasing:"/departments/purchasing" },
+  { name:"Port Arthur ISD", esc:5, enrollment:8000, budget:"$130M", url:"https://www.paisd.org", purchasing:"/departments/purchasing" },
+  // ESC 6 - Huntsville
+  { name:"Conroe ISD", esc:6, enrollment:66000, budget:"$850M", url:"https://www.conroeisd.net", purchasing:"/departments/purchasing", priority:true },
+  { name:"Montgomery ISD", esc:6, enrollment:14000, budget:"$200M", url:"https://www.misd.org", purchasing:"/departments/purchasing" },
+  { name:"Willis ISD", esc:6, enrollment:8000, budget:"$120M", url:"https://www.willisisd.org", purchasing:"/departments/purchasing" },
+  { name:"New Caney ISD", esc:6, enrollment:18000, budget:"$250M", url:"https://www.newcaneyisd.org", purchasing:"/departments/purchasing" },
+  { name:"Huntsville ISD", esc:6, enrollment:7000, budget:"$100M", url:"https://www.huntsville-isd.org", purchasing:"/departments/purchasing" },
+  { name:"Magnolia ISD", esc:6, enrollment:14000, budget:"$190M", url:"https://www.magnoliaisd.org", purchasing:"/departments/purchasing" },
+  // ESC 7 - Kilgore
+  { name:"Tyler ISD", esc:7, enrollment:18000, budget:"$250M", url:"https://www.tylerisd.org", purchasing:"/departments/purchasing" },
+  { name:"Longview ISD", esc:7, enrollment:8000, budget:"$120M", url:"https://www.lisd.org", purchasing:"/departments/purchasing" },
+  { name:"Whitehouse ISD", esc:7, enrollment:6000, budget:"$85M", url:"https://www.whitehouseisd.org", purchasing:"/departments/purchasing" },
+  // ESC 8 - Mt. Pleasant
+  { name:"Texarkana ISD", esc:8, enrollment:7000, budget:"$100M", url:"https://www.txkisd.net", purchasing:"/departments/purchasing" },
+  // ESC 9 - Wichita Falls
+  { name:"Wichita Falls ISD", esc:9, enrollment:13000, budget:"$180M", url:"https://www.wfisd.net", purchasing:"/departments/purchasing" },
+  // ESC 10 - Dallas Metro
+  { name:"Dallas ISD", esc:10, enrollment:145000, budget:"$2.8B", url:"https://www.dallasisd.org", purchasing:"/departments/procurement-services", priority:true },
+  { name:"Plano ISD", esc:10, enrollment:51000, budget:"$710M", url:"https://www.pisd.edu", purchasing:"/departments/purchasing", priority:true },
+  { name:"Richardson ISD", esc:10, enrollment:37000, budget:"$480M", url:"https://web.risd.org", purchasing:"/departments/purchasing" },
+  { name:"Garland ISD", esc:10, enrollment:53000, budget:"$660M", url:"https://www.garlandisd.net", purchasing:"/departments/purchasing", priority:true },
+  { name:"Mesquite ISD", esc:10, enrollment:38000, budget:"$490M", url:"https://www.mesquiteisd.org", purchasing:"/departments/purchasing" },
+  { name:"Grand Prairie ISD", esc:10, enrollment:28000, budget:"$380M", url:"https://www.gpisd.org", purchasing:"/departments/purchasing" },
+  { name:"Duncanville ISD", esc:10, enrollment:12000, budget:"$180M", url:"https://www.duncanvilleisd.org", purchasing:"/departments/purchasing" },
+  { name:"DeSoto ISD", esc:10, enrollment:10000, budget:"$155M", url:"https://www.desotoisd.org", purchasing:"/departments/purchasing" },
+  { name:"Lancaster ISD", esc:10, enrollment:7000, budget:"$110M", url:"https://www.lancasterisd.org", purchasing:"/departments/purchasing" },
+  { name:"Sunnyvale ISD", esc:10, enrollment:2000, budget:"$35M", url:"https://www.sunnyvaleisd.com", purchasing:"/departments/purchasing" },
+  { name:"McKinney ISD", esc:10, enrollment:26000, budget:"$350M", url:"https://www.mckinneyisd.net", purchasing:"/departments/purchasing" },
+  { name:"Allen ISD", esc:10, enrollment:21000, budget:"$290M", url:"https://www.allenisd.org", purchasing:"/departments/purchasing" },
+  { name:"Frisco ISD", esc:10, enrollment:65000, budget:"$800M", url:"https://www.friscoisd.org", purchasing:"/departments/purchasing", priority:true },
+  { name:"Wylie ISD (Collin Co.)", esc:10, enrollment:18000, budget:"$250M", url:"https://www.wylieisd.net", purchasing:"/departments/purchasing" },
+  { name:"Prosper ISD", esc:10, enrollment:22000, budget:"$300M", url:"https://www.prosper-isd.net", purchasing:"/departments/purchasing" },
+  { name:"Lovejoy ISD", esc:10, enrollment:5000, budget:"$70M", url:"https://www.lovejoyisd.net", purchasing:"/departments/purchasing" },
+  { name:"Rockwall ISD", esc:10, enrollment:17000, budget:"$240M", url:"https://www.rockwallisd.com", purchasing:"/departments/purchasing" },
+  { name:"Royse City ISD", esc:10, enrollment:8000, budget:"$120M", url:"https://www.rcisd.org", purchasing:"/departments/purchasing" },
+  { name:"Forney ISD", esc:10, enrollment:15000, budget:"$210M", url:"https://www.forneyisd.net", purchasing:"/departments/purchasing" },
+  { name:"Terrell ISD", esc:10, enrollment:5000, budget:"$70M", url:"https://www.terrellisd.org", purchasing:"/departments/purchasing" },
+  // ESC 11 - Fort Worth
+  { name:"Fort Worth ISD", esc:11, enrollment:73000, budget:"$1.3B", url:"https://www.fwisd.org", purchasing:"/departments/purchasing", priority:true },
+  { name:"Arlington ISD", esc:11, enrollment:57000, budget:"$680M", url:"https://www.aisd.net", purchasing:"/departments/purchasing", priority:true },
+  { name:"Mansfield ISD", esc:11, enrollment:35000, budget:"$450M", url:"https://www.mansfieldisd.org", purchasing:"/departments/purchasing" },
+  { name:"HEB ISD", esc:11, enrollment:24000, budget:"$320M", url:"https://www.hebisd.edu", purchasing:"/departments/purchasing" },
+  { name:"Keller ISD", esc:11, enrollment:35000, budget:"$440M", url:"https://www.kellerisd.net", purchasing:"/departments/purchasing" },
+  { name:"Northwest ISD", esc:11, enrollment:28000, budget:"$370M", url:"https://www.nisdtx.org", purchasing:"/departments/purchasing" },
+  { name:"Birdville ISD", esc:11, enrollment:23000, budget:"$310M", url:"https://www.birdvilleschools.net", purchasing:"/departments/purchasing" },
+  { name:"Eagle Mountain-Saginaw ISD", esc:11, enrollment:21000, budget:"$290M", url:"https://www.emsisd.com", purchasing:"/departments/purchasing" },
+  { name:"Crowley ISD", esc:11, enrollment:16000, budget:"$220M", url:"https://www.crowley.k12.tx.us", purchasing:"/departments/purchasing" },
+  { name:"Weatherford ISD", esc:11, enrollment:9000, budget:"$130M", url:"https://www.weatherfordisd.com", purchasing:"/departments/purchasing" },
+  { name:"Granbury ISD", esc:11, enrollment:8000, budget:"$120M", url:"https://www.granburyisd.org", purchasing:"/departments/purchasing" },
+  { name:"Azle ISD", esc:11, enrollment:6000, budget:"$85M", url:"https://www.azleisd.net", purchasing:"/departments/purchasing" },
+  { name:"Burleson ISD", esc:11, enrollment:12000, budget:"$170M", url:"https://www.burleson.k12.tx.us", purchasing:"/departments/purchasing" },
+  { name:"Cleburne ISD", esc:11, enrollment:7000, budget:"$100M", url:"https://www.c-isd.com", purchasing:"/departments/purchasing" },
+  // ESC 12 - Waco
+  { name:"Waco ISD", esc:12, enrollment:14000, budget:"$200M", url:"https://www.wacoisd.org", purchasing:"/departments/purchasing" },
+  { name:"Midway ISD", esc:12, enrollment:8000, budget:"$120M", url:"https://www.midwayisd.org", purchasing:"/departments/purchasing" },
+  { name:"Killeen ISD", esc:12, enrollment:45000, budget:"$560M", url:"https://www.killeenisd.org", purchasing:"/departments/purchasing", priority:true },
+  { name:"Temple ISD", esc:12, enrollment:9000, budget:"$130M", url:"https://www.tisd.org", purchasing:"/departments/purchasing" },
+  { name:"Belton ISD", esc:12, enrollment:12000, budget:"$170M", url:"https://www.bisd.net", purchasing:"/departments/purchasing" },
+  { name:"Copperas Cove ISD", esc:12, enrollment:8000, budget:"$110M", url:"https://www.ccisd.com", purchasing:"/departments/purchasing" },
+  // ESC 13 - Austin
+  { name:"Austin ISD", esc:13, enrollment:75000, budget:"$1.5B", url:"https://www.austinisd.org", purchasing:"/departments/purchasing", priority:true },
+  { name:"Round Rock ISD", esc:13, enrollment:48000, budget:"$620M", url:"https://www.roundrockisd.org", purchasing:"/departments/purchasing", priority:true },
+  { name:"Leander ISD", esc:13, enrollment:42000, budget:"$560M", url:"https://www.leanderisd.org", purchasing:"/departments/purchasing", priority:true },
+  { name:"Pflugerville ISD", esc:13, enrollment:27000, budget:"$360M", url:"https://www.pfisd.net", purchasing:"/departments/purchasing" },
+  { name:"Hays CISD", esc:13, enrollment:22000, budget:"$300M", url:"https://www.hayscisd.net", purchasing:"/departments/purchasing" },
+  { name:"Georgetown ISD", esc:13, enrollment:14000, budget:"$200M", url:"https://www.georgetownisd.org", purchasing:"/departments/purchasing" },
+  { name:"Lake Travis ISD", esc:13, enrollment:12000, budget:"$180M", url:"https://www.ltisdschools.org", purchasing:"/departments/purchasing" },
+  { name:"Eanes ISD", esc:13, enrollment:8000, budget:"$130M", url:"https://www.eanesisd.net", purchasing:"/departments/purchasing" },
+  { name:"Del Valle ISD", esc:13, enrollment:12000, budget:"$170M", url:"https://www.dvisd.net", purchasing:"/departments/purchasing" },
+  { name:"Manor ISD", esc:13, enrollment:10000, budget:"$150M", url:"https://www.manorisd.net", purchasing:"/departments/purchasing" },
+  { name:"Bastrop ISD", esc:13, enrollment:10000, budget:"$145M", url:"https://www.bfrsd.net", purchasing:"/departments/purchasing" },
+  { name:"Dripping Springs ISD", esc:13, enrollment:8000, budget:"$120M", url:"https://www.dsisdtx.us", purchasing:"/departments/purchasing" },
+  { name:"Liberty Hill ISD", esc:13, enrollment:6000, budget:"$90M", url:"https://www.libertyhill.txed.net", purchasing:"/departments/purchasing" },
+  // ESC 14 - Abilene
+  { name:"Abilene ISD", esc:14, enrollment:14000, budget:"$200M", url:"https://www.abileneisd.org", purchasing:"/departments/purchasing" },
+  // ESC 15 - San Angelo
+  { name:"San Angelo ISD", esc:15, enrollment:14000, budget:"$190M", url:"https://www.saisd.org", purchasing:"/departments/purchasing" },
+  // ESC 16 - Amarillo
+  { name:"Amarillo ISD", esc:16, enrollment:30000, budget:"$400M", url:"https://www.amaisd.org", purchasing:"/departments/purchasing" },
+  { name:"Canyon ISD", esc:16, enrollment:11000, budget:"$160M", url:"https://www.canyonisd.net", purchasing:"/departments/purchasing" },
+  // ESC 17 - Lubbock
+  { name:"Lubbock ISD", esc:17, enrollment:28000, budget:"$370M", url:"https://www.lubbockisd.org", purchasing:"/departments/purchasing" },
+  { name:"Lubbock-Cooper ISD", esc:17, enrollment:9000, budget:"$130M", url:"https://www.lcisd.net", purchasing:"/departments/purchasing" },
+  { name:"Frenship ISD", esc:17, enrollment:11000, budget:"$160M", url:"https://www.frenship.us", purchasing:"/departments/purchasing" },
+  // ESC 18 - Midland
+  { name:"Midland ISD", esc:18, enrollment:26000, budget:"$350M", url:"https://www.midlandisd.net", purchasing:"/departments/purchasing" },
+  { name:"Ector County ISD (Odessa)", esc:18, enrollment:33000, budget:"$430M", url:"https://www.ectorcountyisd.org", purchasing:"/departments/purchasing" },
+  // ESC 19 - El Paso
+  { name:"El Paso ISD", esc:19, enrollment:54000, budget:"$720M", url:"https://www.episd.org", purchasing:"/departments/purchasing", priority:true },
+  { name:"Ysleta ISD", esc:19, enrollment:40000, budget:"$520M", url:"https://www.yisd.net", purchasing:"/departments/purchasing" },
+  { name:"Socorro ISD", esc:19, enrollment:46000, budget:"$600M", url:"https://www.sisd.net", purchasing:"/departments/purchasing", priority:true },
+  { name:"Canutillo ISD", esc:19, enrollment:6000, budget:"$85M", url:"https://www.canutillo-isd.org", purchasing:"/departments/purchasing" },
+  // ESC 20 - San Antonio
+  { name:"San Antonio ISD", esc:20, enrollment:46000, budget:"$850M", url:"https://www.saisd.net", purchasing:"/departments/purchasing", priority:true },
+  { name:"Northside ISD", esc:20, enrollment:98000, budget:"$1.1B", url:"https://www.nisd.net", purchasing:"/departments/purchasing", priority:true },
+  { name:"North East ISD", esc:20, enrollment:62000, budget:"$770M", url:"https://www.neisd.net", purchasing:"/departments/purchasing", priority:true },
+  { name:"Judson ISD", esc:20, enrollment:24000, budget:"$320M", url:"https://www.judsonisd.org", purchasing:"/departments/purchasing" },
+  { name:"Southwest ISD", esc:20, enrollment:13000, budget:"$185M", url:"https://www.swisd.net", purchasing:"/departments/purchasing" },
+  { name:"Schertz-Cibolo-Universal City ISD", esc:20, enrollment:17000, budget:"$240M", url:"https://www.scuc.txed.net", purchasing:"/departments/purchasing" },
+  { name:"Comal ISD", esc:20, enrollment:26000, budget:"$350M", url:"https://www.comalisd.org", purchasing:"/departments/purchasing" },
+  { name:"New Braunfels ISD", esc:20, enrollment:9000, budget:"$130M", url:"https://www.nbisd.org", purchasing:"/departments/purchasing" },
+  { name:"Seguin ISD", esc:20, enrollment:7000, budget:"$100M", url:"https://www.seguin.k12.tx.us", purchasing:"/departments/purchasing" },
+  { name:"Laredo ISD", esc:20, enrollment:23000, budget:"$310M", url:"https://www.laredoisd.org", purchasing:"/departments/purchasing" },
+  { name:"United ISD (Laredo)", esc:20, enrollment:43000, budget:"$550M", url:"https://www.uisd.net", purchasing:"/departments/purchasing" },
+  { name:"Eagle Pass ISD", esc:20, enrollment:14000, budget:"$200M", url:"https://www.eaglepassisd.net", purchasing:"/departments/purchasing" },
+  { name:"Uvalde CISD", esc:20, enrollment:4000, budget:"$60M", url:"https://www.ucisd.net", purchasing:"/departments/purchasing" },
+  // Additional large districts in various ESCs
+  { name:"Denton ISD", esc:11, enrollment:30000, budget:"$400M", url:"https://www.dentonisd.org", purchasing:"/departments/purchasing" },
+  { name:"Lewisville ISD", esc:11, enrollment:51000, budget:"$640M", url:"https://www.lisd.net", purchasing:"/departments/purchasing", priority:true },
+  { name:"Carrollton-Farmers Branch ISD", esc:10, enrollment:25000, budget:"$340M", url:"https://www.cfbisd.edu", purchasing:"/departments/purchasing" },
+  { name:"Irving ISD", esc:10, enrollment:33000, budget:"$430M", url:"https://www.irvingisd.net", purchasing:"/departments/purchasing" },
+  { name:"Coppell ISD", esc:10, enrollment:13000, budget:"$190M", url:"https://www.coppellisd.com", purchasing:"/departments/purchasing" },
+  { name:"Cedar Hill ISD", esc:10, enrollment:8000, budget:"$120M", url:"https://www.chisd.net", purchasing:"/departments/purchasing" },
+  { name:"Waxahachie ISD", esc:10, enrollment:9000, budget:"$130M", url:"https://www.wisd.org", purchasing:"/departments/purchasing" },
+  { name:"Ennis ISD", esc:10, enrollment:6000, budget:"$85M", url:"https://www.ennisisd.org", purchasing:"/departments/purchasing" },
+  { name:"Corsicana ISD", esc:12, enrollment:5000, budget:"$75M", url:"https://www.cisd.org", purchasing:"/departments/purchasing" },
+  { name:"Bryan ISD", esc:6, enrollment:16000, budget:"$230M", url:"https://www.bryanisd.org", purchasing:"/departments/purchasing" },
+  { name:"College Station ISD", esc:6, enrollment:14000, budget:"$200M", url:"https://www.csisd.org", purchasing:"/departments/purchasing" },
+  { name:"Lufkin ISD", esc:7, enrollment:8000, budget:"$110M", url:"https://www.lufkinisd.org", purchasing:"/departments/purchasing" },
+  { name:"Nacogdoches ISD", esc:7, enrollment:6000, budget:"$85M", url:"https://www.nacisd.org", purchasing:"/departments/purchasing" },
+  { name:"Sherman ISD", esc:10, enrollment:7000, budget:"$100M", url:"https://www.shermanisd.net", purchasing:"/departments/purchasing" },
+  { name:"Denison ISD", esc:10, enrollment:4000, budget:"$60M", url:"https://www.denisonisd.net", purchasing:"/departments/purchasing" },
+  { name:"Texarkana ISD", esc:8, enrollment:7000, budget:"$100M", url:"https://www.txkisd.net", purchasing:"/departments/purchasing" },
+  { name:"San Marcos CISD", esc:13, enrollment:8000, budget:"$115M", url:"https://www.smcisd.net", purchasing:"/departments/purchasing" },
+  { name:"Hutto ISD", esc:13, enrollment:9000, budget:"$130M", url:"https://www.huttoisd.net", purchasing:"/departments/purchasing" },
+  { name:"Taylor ISD", esc:13, enrollment:4000, budget:"$60M", url:"https://www.taylorisd.org", purchasing:"/departments/purchasing" },
+];
+
+// ═══════════════════════════════════════════════════════════════
+// CHARTER SCHOOL NETWORKS
+// ═══════════════════════════════════════════════════════════════
+const CHARTER_NETWORKS = [
+  { name:"KIPP Texas Public Schools", enrollment:34000, campuses:59, url:"https://www.kipptexas.org", cities:"Houston, San Antonio, Austin, Dallas" },
+  { name:"Uplift Education", enrollment:18000, campuses:20, url:"https://www.uplifteducation.org", cities:"Dallas-Fort Worth" },
+  { name:"IDEA Public Schools", enrollment:80000, campuses:143, url:"https://www.ideapublicschools.org", cities:"RGV, San Antonio, Austin, Houston, El Paso, Midland, Tarrant Co." },
+  { name:"YES Prep Public Schools", enrollment:16000, campuses:24, url:"https://www.yesprep.org", cities:"Houston" },
+  { name:"Harmony Public Schools", enrollment:37000, campuses:60, url:"https://www.harmonytx.org", cities:"Statewide (Houston, DFW, SA, Austin, El Paso, etc.)" },
+  { name:"Responsive Education Solutions", enrollment:17000, campuses:75, url:"https://www.responsiveed.com", cities:"Statewide" },
+  { name:"NYOS Charter School", enrollment:1500, campuses:2, url:"https://www.nyos.org", cities:"Austin" },
+  { name:"Texans Can Academies", enrollment:7000, campuses:15, url:"https://texanscan.org", cities:"Dallas, Houston, SA, Austin, Fort Worth" },
+  { name:"Life School", enrollment:6000, campuses:10, url:"https://www.lifeschool.net", cities:"DFW" },
+  { name:"Basis Texas", enrollment:3400, campuses:6, url:"https://www.basised.com", cities:"San Antonio, Austin" },
+  { name:"Great Hearts Texas", enrollment:8000, campuses:12, url:"https://www.greatheartstexas.org", cities:"San Antonio, North Texas" },
+  { name:"International Leadership of Texas", enrollment:22000, campuses:25, url:"https://www.iltexas.org", cities:"DFW, Houston, Garland" },
+  { name:"Jubilee Academies", enrollment:5000, campuses:10, url:"https://www.jubileeacademies.org", cities:"San Antonio" },
+  { name:"Compass Rose Public Schools", enrollment:3000, campuses:4, url:"https://www.compassroseschools.org", cities:"San Antonio" },
+  { name:"Houston Gateway Academy", enrollment:3000, campuses:5, url:"https://www.hgacademy.com", cities:"Houston" },
+  { name:"Universal Academy", enrollment:3000, campuses:4, url:"https://www.universalacademy.com", cities:"Dallas" },
+  { name:"Legacy Preparatory", enrollment:2000, campuses:3, url:"https://www.legacyprepsa.com", cities:"San Antonio" },
+  { name:"Orenda Education", enrollment:3500, campuses:6, url:"https://www.orendaeducation.org", cities:"Multiple" },
+  { name:"School of Science and Technology", enrollment:8000, campuses:13, url:"https://www.sstschools.org", cities:"San Antonio, Corpus, RGV" },
+  { name:"A+ Academy", enrollment:3500, campuses:5, url:"https://www.aplusacademytx.org", cities:"Dallas" },
+];
+
+// ═══════════════════════════════════════════════════════════════
+// MAIN COMPONENT
+// ═══════════════════════════════════════════════════════════════
+const Badge = ({cap}) => (
+  <span style={{ display:'inline-flex', alignItems:'center', gap:3, padding:'2px 8px', borderRadius:16, fontSize:10, fontWeight:700, background:cap.color+'15', color:cap.color, border:`1px solid ${cap.color}25` }}>
+    <span style={{ width:5,height:5,borderRadius:'50%',background:cap.color,opacity:0.7 }}/>
+    {cap.label}
+  </span>
+);
+
+const ScoreMeter = ({score}) => {
+  const c = score>=70?'#2D6A4F':score>=40?'#E07A2F':'#999';
+  const l = score>=70?'HIGH':score>=40?'MED':'LOW';
+  return (
+    <div style={{ display:'flex',alignItems:'center',gap:8 }}>
+      <div style={{ width:80,height:5,borderRadius:3,background:'#E8E8E8',overflow:'hidden' }}>
+        <div style={{ width:`${score}%`,height:'100%',borderRadius:3,background:c,transition:'width 0.4s' }}/>
+      </div>
+      <span style={{ fontSize:9,fontWeight:800,letterSpacing:'0.1em',color:c }}>{l}</span>
+    </div>
+  );
+};
+
+export default function TexasRFPHub() {
+  const [tab, setTab] = useState('portals');
+  const [escFilter, setEscFilter] = useState(0);
+  const [search, setSearch] = useState('');
+  const [rfps, setRfps] = useState([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [progress, setProgress] = useState({cur:0,tot:0,msg:''});
+  const [rawResults, setRawResults] = useState([]);
+  const [selectedRFP, setSelectedRFP] = useState(null);
+  const [filterCap, setFilterCap] = useState('ALL');
+  const [searchDone, setSearchDone] = useState(false);
+  const [customQ, setCustomQ] = useState('');
+  const [apiKey, setApiKey] = useState(() => {
+    try { return localStorage.getItem('safal_anthropic_key') || ''; } catch { return ''; }
+  });
+  const [showSettings, setShowSettings] = useState(false);
+  const abortRef = useRef(false);
+
+  const saveApiKey = (key) => {
+    setApiKey(key);
+    try { localStorage.setItem('safal_anthropic_key', key); } catch {}
+  };
+
+  const SCAN_QUERIES = [
+    'Texas school district RFP open 2026 instructional materials curriculum HQIM',
+    'Texas education service center RFP 2026 professional development training coaching',
+    'Texas ISD RFP 2026 program evaluation data analytics consulting services',
+    'Texas school district RFQ 2026 special education services SPED consulting',
+    'Texas ESC RFP 2026 technical assistance school improvement strategic planning',
+    'Texas ISD RFP 2026 CTE workforce career pathways work-based learning',
+    'Texas school district RFP 2026 grant management federal funds Title consulting',
+    'Region 4 ESC Region 10 ESC RFP 2026 education consulting services',
+    'Houston ISD Dallas ISD Fort Worth ISD RFP open 2026 education services',
+    'BuyBoard TIPS Texas education RFP active solicitations 2026 consulting',
+    'Texas charter school IDEA KIPP Harmony RFP procurement 2026',
+    'Austin ISD San Antonio ISD El Paso ISD RFP 2026 curriculum professional development',
+    'bonfirehub.com Texas education open opportunities RFP consulting services 2026',
+  ];
+
+  const doSearch = useCallback(async (queries) => {
+    setIsSearching(true); setRfps([]); setRawResults([]); setSearchDone(false);
+    abortRef.current = false;
+    const all = [], raw = [];
+    for (let i=0; i<queries.length; i++) {
+      if (abortRef.current) break;
+      setProgress({cur:i+1,tot:queries.length,msg:queries[i].substring(0,55)+'...'});
+      try {
+        const r = await fetch("https://api.anthropic.com/v1/messages", {
+          method:"POST", headers:{
+            "Content-Type":"application/json",
+            "x-api-key": apiKey,
+            "anthropic-version": "2023-06-01",
+            "anthropic-dangerous-direct-browser-access": "true"
+          },
+          body: JSON.stringify({ model:"claude-sonnet-4-20250514", max_tokens:1000,
+            tools:[{type:"web_search_20250305",name:"web_search"}],
+            messages:[{role:"user",content:`Search: ${queries[i]}\n\nFind ACTIVE, CURRENTLY OPEN RFPs/RFQs/bids from Texas school districts, ISDs, ESCs, or charter schools. For each:\n1. **Title**\n2. **Issuing entity**\n3. **Deadline/closing date**\n4. **Estimated value** if available\n5. **Description**\n6. **URL**\nOnly include currently open opportunities. If none found, say "No active RFPs found."`}]
+          })
+        });
+        const d = await r.json();
+        const txt = d.content?.filter(x=>x.type==="text")?.map(x=>x.text)?.join('\n')||'';
+        raw.push({q:queries[i],r:txt});
+        if (!txt.toLowerCase().includes('no active rfps found')) {
+          const parsed = parseResults(txt, queries[i]);
+          all.push(...parsed);
+        }
+        setRfps([...all]); setRawResults([...raw]);
+        await new Promise(r=>setTimeout(r,700));
+      } catch(e) { raw.push({q:queries[i],r:`Error: ${e.message}`}); }
+    }
+    setIsSearching(false); setSearchDone(true);
+  }, []);
+
+  function parseResults(text, query) {
+    const items = [];
+    const lines = text.split('\n');
+    let cur = null;
+    for (const line of lines) {
+      const t = line.trim();
+      if (!t) continue;
+      if (t.match(/^[\d\.\)]+\s*\*?\*?[A-Z]/) || t.match(/^\*\*[A-Z]/) || t.match(/^#{1,3}\s/)) {
+        if (cur?.title) { const c=matchCapabilities(cur.title+' '+cur.desc); cur.caps=c; cur.score=computeScore(c); items.push(cur); }
+        cur = { id:`r-${Date.now()}-${items.length}`, title:t.replace(/^[\d\.\)]+\s*/,'').replace(/^\*\*/,'').replace(/\*\*$/,'').replace(/^#{1,3}\s/,''), desc:'', source:'', deadline:'', value:'', caps:[], score:0, query, raw:text };
+      } else if (cur) {
+        cur.desc += ' ' + t;
+        const dm = t.match(/(?:deadline|due|closes?|closing|submission)[\s:]*([A-Za-z]+\s+\d{1,2},?\s+\d{4}|\d{1,2}\/\d{1,2}\/\d{4})/i);
+        if (dm) cur.deadline = dm[1];
+        const sm = t.match(/(?:source|from|posted by|issuer|entity)[\s:]*([^\n,]+)/i);
+        if (sm) cur.source = sm[1].trim();
+        const vm = t.match(/\$[\d,]+(?:\.\d{2})?(?:\s*(?:million|M|thousand|K))?/i);
+        if (vm) cur.value = vm[0];
+      }
+    }
+    if (cur?.title) { const c=matchCapabilities(cur.title+' '+cur.desc); cur.caps=c; cur.score=computeScore(c); items.push(cur); }
+    return items;
+  }
+
+  const filteredDistricts = useMemo(() => {
+    let d = DISTRICTS;
+    if (escFilter > 0) d = d.filter(x => x.esc === escFilter);
+    if (search) d = d.filter(x => x.name.toLowerCase().includes(search.toLowerCase()));
+    return d.sort((a,b) => b.enrollment - a.enrollment);
+  }, [escFilter, search]);
+
+  const filteredRFPs = useMemo(() => {
+    let r = rfps;
+    if (filterCap !== 'ALL') r = r.filter(x => x.caps.some(c => c.key === filterCap));
+    return r.sort((a,b) => b.score - a.score);
+  }, [rfps, filterCap]);
+
+  const tabStyle = (t) => ({
+    padding:'10px 20px', fontSize:13, fontWeight:tab===t?800:500, cursor:'pointer',
+    background:tab===t?'#FFF':'transparent', color:tab===t?'#1B4965':'#888',
+    border:'none', borderBottom:tab===t?'3px solid #C5A768':'3px solid transparent',
+    letterSpacing:'0.02em', transition:'all 0.2s'
+  });
+
+  return (
+    <div style={{ minHeight:'100vh', background:'#F4F2ED', fontFamily:"'DM Sans','Segoe UI',sans-serif", color:'#1A1A1A' }}>
+      <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700;800&family=DM+Mono:wght@400;500&family=Playfair+Display:wght@700;800;900&display=swap" rel="stylesheet"/>
+
+      {/* Header */}
+      <div style={{ background:'linear-gradient(135deg,#0A1628 0%,#1B4965 50%,#0D3B4F 100%)', padding:'28px 36px', position:'relative', overflow:'hidden' }}>
+        <div style={{ position:'absolute',top:0,right:0,width:500,height:'100%',background:'linear-gradient(45deg,transparent,rgba(197,167,104,0.06))',borderRadius:'0 0 0 100%' }}/>
+        <div style={{ position:'relative', maxWidth:1500, margin:'0 auto' }}>
+          <div style={{ display:'flex',alignItems:'center',gap:14,marginBottom:4 }}>
+            <div style={{ width:38,height:38,borderRadius:8,background:'linear-gradient(135deg,#C5A768,#A8893A)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:17,fontWeight:800,color:'#0A1628',fontFamily:"'Playfair Display',serif" }}>S</div>
+            <div>
+              <h1 style={{ fontSize:22,fontWeight:800,color:'#FFF',margin:0,fontFamily:"'Playfair Display',serif",letterSpacing:'-0.02em' }}>Texas Education RFP Intelligence Hub</h1>
+              <p style={{ fontSize:11,color:'#C5A768',margin:0,fontWeight:500,letterSpacing:'0.08em',textTransform:'uppercase' }}>Safal Partners — {DISTRICTS.length} ISDs · 20 ESCs · {CHARTER_NETWORKS.length} Charter Networks · {PROCUREMENT_PORTALS.length} Portals · {BONFIRE_PORTALS.length} Bonfire Sites</p>
+            </div>
+            <button onClick={()=>setShowSettings(!showSettings)} style={{ background:'rgba(255,255,255,0.1)',border:'1px solid rgba(255,255,255,0.2)',borderRadius:8,padding:'6px 14px',color:'#C5A768',fontSize:12,fontWeight:700,cursor:'pointer',marginLeft:'auto' }}>
+              ⚙️ API Settings
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Settings Panel */}
+      {showSettings && (
+        <div style={{ background:'#FFF8E7',borderBottom:'1px solid #E0DCD4',padding:'16px 36px',maxWidth:1500,margin:'0 auto' }}>
+          <div style={{ display:'flex',gap:16,alignItems:'flex-end',flexWrap:'wrap' }}>
+            <div style={{ flex:1,minWidth:300 }}>
+              <label style={{ fontSize:10,fontWeight:700,color:'#888',letterSpacing:'0.08em',textTransform:'uppercase',display:'block',marginBottom:4 }}>Anthropic API Key (required for AI Scanner)</label>
+              <input
+                type="password"
+                value={apiKey}
+                onChange={e=>saveApiKey(e.target.value)}
+                placeholder="sk-ant-api03-..."
+                style={{ width:'100%',padding:'8px 12px',fontSize:13,border:'1px solid #D0CCC4',borderRadius:6,fontFamily:'inherit',background:'#FFF',boxSizing:'border-box' }}
+              />
+            </div>
+            <div style={{ fontSize:12,color:'#888',maxWidth:400 }}>
+              <p style={{ margin:0,lineHeight:1.4 }}>Get your API key at <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer" style={{ color:'#1B4965',fontWeight:600 }}>console.anthropic.com</a>. Key is stored in your browser only — never sent anywhere except Anthropic. The portal/directory features work without a key.</p>
+            </div>
+            <button onClick={()=>setShowSettings(false)} style={{ padding:'8px 14px',borderRadius:6,border:'1px solid #D0CCC4',background:'#FFF',fontSize:12,fontWeight:600,cursor:'pointer' }}>Close</button>
+          </div>
+        </div>
+      )}
+
+      {/* Tab Bar */}
+      <div style={{ background:'#FAFAF7',borderBottom:'1px solid #E0DCD4',display:'flex',gap:0,maxWidth:1500,margin:'0 auto',padding:'0 36px' }}>
+        <button style={tabStyle('portals')} onClick={()=>setTab('portals')}>🔗 Procurement Portals</button>
+        <button style={tabStyle('bonfire')} onClick={()=>setTab('bonfire')}>🔥 Bonfire Portals</button>
+        <button style={tabStyle('escs')} onClick={()=>setTab('escs')}>🏛 ESCs (20)</button>
+        <button style={tabStyle('districts')} onClick={()=>setTab('districts')}>🏫 School Districts ({DISTRICTS.length})</button>
+        <button style={tabStyle('charters')} onClick={()=>setTab('charters')}>📋 Charter Networks ({CHARTER_NETWORKS.length})</button>
+        <button style={tabStyle('scan')} onClick={()=>setTab('scan')}>⚡ AI RFP Scanner</button>
+      </div>
+
+      <div style={{ maxWidth:1500, margin:'0 auto', padding:'24px 36px' }}>
+
+        {/* ─── PROCUREMENT PORTALS ─── */}
+        {tab === 'portals' && (
+          <div>
+            <p style={{ fontSize:14,color:'#666',marginBottom:20 }}>These are the primary procurement portals where Texas school districts, ESCs, and charter schools post RFPs. Priority sites are flagged — start your search here.</p>
+            {['state','cooperative','federal','aggregator'].map(type => (
+              <div key={type} style={{ marginBottom:24 }}>
+                <h3 style={{ fontSize:13,fontWeight:800,color:'#1B4965',letterSpacing:'0.08em',textTransform:'uppercase',margin:'0 0 10px',fontFamily:"'Playfair Display',serif" }}>
+                  {type==='state'?'🏛 State Agency Portals':type==='cooperative'?'🤝 Purchasing Cooperatives':type==='federal'?'🇺🇸 Federal Portals':'🔍 Aggregators'}
+                </h3>
+                <div style={{ display:'flex',flexDirection:'column',gap:8 }}>
+                  {PROCUREMENT_PORTALS.filter(p=>p.type===type).map(p => (
+                    <div key={p.name} style={{ background:'#FFF',borderRadius:10,padding:'14px 18px',border:p.priority?'1px solid #C5A76840':'1px solid #E0DCD4',borderLeft:p.priority?'4px solid #C5A768':'4px solid #DDD',display:'flex',justifyContent:'space-between',alignItems:'center',gap:16 }}>
+                      <div style={{ flex:1 }}>
+                        <div style={{ display:'flex',alignItems:'center',gap:8 }}>
+                          {p.priority && <span style={{ fontSize:9,fontWeight:800,color:'#A8893A',background:'#C5A76815',padding:'2px 6px',borderRadius:4 }}>★ PRIORITY</span>}
+                          <span style={{ fontSize:14,fontWeight:700 }}>{p.name}</span>
+                        </div>
+                        <p style={{ fontSize:12,color:'#888',margin:'4px 0 0',lineHeight:1.4 }}>{p.desc}</p>
+                      </div>
+                      <a href={p.url} target="_blank" rel="noopener noreferrer" style={{ padding:'6px 14px',borderRadius:6,background:'#1B4965',color:'#FFF',fontSize:11,fontWeight:700,textDecoration:'none',whiteSpace:'nowrap',letterSpacing:'0.02em' }}>Open →</a>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ─── BONFIRE PORTALS ─── */}
+        {tab === 'bonfire' && (
+          <div>
+            <div style={{ background:'#FFF',borderRadius:12,padding:'18px 22px',border:'1px solid #E0DCD4',marginBottom:20 }}>
+              <h3 style={{ fontSize:15,fontWeight:800,color:'#1B4965',margin:'0 0 6px',fontFamily:"'Playfair Display',serif" }}>Bonfire / Euna Procurement Portals</h3>
+              <p style={{ fontSize:13,color:'#666',margin:0,lineHeight:1.5 }}>
+                Bonfire (now Euna Procurement) is the e-bidding platform used by TEA, TWC, multiple ESCs, and many of the largest Texas ISDs. Each entity has its own Bonfire portal where you can view open opportunities, register as a vendor, and submit proposals electronically. <strong>Registration is free</strong> — register with your NIGP commodity codes to receive automatic email notifications when matching RFPs are posted. Below are all confirmed Texas education Bonfire portals.
+              </p>
+            </div>
+            {['state','esc','isd','higher_ed'].map(type => {
+              const items = BONFIRE_PORTALS.filter(p=>p.type===type);
+              if (!items.length) return null;
+              return (
+                <div key={type} style={{ marginBottom:24 }}>
+                  <h3 style={{ fontSize:13,fontWeight:800,color:'#1B4965',letterSpacing:'0.08em',textTransform:'uppercase',margin:'0 0 10px',fontFamily:"'Playfair Display',serif" }}>
+                    {type==='state'?'🏛 State Agencies':type==='esc'?'📍 Education Service Centers':type==='isd'?'🏫 School Districts (ISDs)':'🎓 Higher Education'}
+                  </h3>
+                  <div style={{ display:'flex',flexDirection:'column',gap:8 }}>
+                    {items.map(p => (
+                      <div key={p.name} style={{ background:'#FFF',borderRadius:10,padding:'14px 18px',border:p.priority?'1px solid #C5A76840':'1px solid #E0DCD4',borderLeft:p.priority?'4px solid #C5A768':'4px solid #DDD',display:'flex',justifyContent:'space-between',alignItems:'center',gap:16 }}>
+                        <div style={{ flex:1 }}>
+                          <div style={{ display:'flex',alignItems:'center',gap:8 }}>
+                            {p.priority && <span style={{ fontSize:9,fontWeight:800,color:'#A8893A',background:'#C5A76815',padding:'2px 6px',borderRadius:4 }}>★ PRIORITY</span>}
+                            <span style={{ fontSize:14,fontWeight:700 }}>{p.name}</span>
+                          </div>
+                          {p.note && <p style={{ fontSize:12,color:'#888',margin:'4px 0 0',lineHeight:1.4 }}>{p.note}</p>}
+                        </div>
+                        <a href={p.url} target="_blank" rel="noopener noreferrer" style={{ padding:'6px 14px',borderRadius:6,background:'linear-gradient(135deg,#E85D26,#F4845F)',color:'#FFF',fontSize:11,fontWeight:700,textDecoration:'none',whiteSpace:'nowrap',letterSpacing:'0.02em' }}>Open in Bonfire →</a>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+            <div style={{ background:'#FAFAF8',borderRadius:10,padding:'16px 20px',border:'1px dashed #D0CCC4',marginTop:8 }}>
+              <p style={{ fontSize:12,color:'#888',margin:0,lineHeight:1.5 }}>
+                <strong>Note:</strong> Many more Texas ISDs and ESCs use Bonfire but haven't been confirmed yet. The standard URL pattern is <code style={{ background:'#EEE',padding:'1px 4px',borderRadius:3,fontSize:11 }}>[entity-name].bonfirehub.com/portal</code>. For example, try <code style={{ background:'#EEE',padding:'1px 4px',borderRadius:3,fontSize:11 }}>houstonisd.bonfirehub.com</code> or <code style={{ background:'#EEE',padding:'1px 4px',borderRadius:3,fontSize:11 }}>fwisd.bonfirehub.com</code>. If an entity uses Bonfire, their purchasing page will typically link to it.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* ─── ESCs ─── */}
+        {tab === 'escs' && (
+          <div>
+            <p style={{ fontSize:14,color:'#666',marginBottom:20 }}>All 20 Texas Education Service Centers with direct links to their procurement/purchasing pages and bid systems.</p>
+            <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:12 }}>
+              {ESC_DATA.map(e => (
+                <div key={e.id} style={{ background:'#FFF',borderRadius:10,padding:'16px 20px',border:'1px solid #E0DCD4' }}>
+                  <div style={{ display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8 }}>
+                    <div>
+                      <div style={{ fontSize:10,fontWeight:700,color:'#C5A768',letterSpacing:'0.06em' }}>REGION {e.id}</div>
+                      <h4 style={{ fontSize:15,fontWeight:800,margin:'2px 0',color:'#1B4965' }}>Region {e.id} ESC — {e.city}</h4>
+                    </div>
+                    <span style={{ fontSize:11,color:'#888',fontWeight:600 }}>{e.districts} districts</span>
+                  </div>
+                  <p style={{ fontSize:11,color:'#999',margin:'0 0 8px',lineHeight:1.4 }}>Counties: {e.counties}</p>
+                  {e.note && <p style={{ fontSize:11,color:'#2D6A4F',fontWeight:600,margin:'0 0 8px' }}>💡 {e.note}</p>}
+                  <div style={{ display:'flex',gap:6,flexWrap:'wrap' }}>
+                    <a href={e.url} target="_blank" rel="noopener noreferrer" style={{ padding:'4px 10px',borderRadius:5,background:'#1B496510',color:'#1B4965',fontSize:10,fontWeight:700,textDecoration:'none',border:'1px solid #1B496520' }}>Website</a>
+                    <a href={e.procurement} target="_blank" rel="noopener noreferrer" style={{ padding:'4px 10px',borderRadius:5,background:'#C5A76810',color:'#A8893A',fontSize:10,fontWeight:700,textDecoration:'none',border:'1px solid #C5A76830' }}>Purchasing/Bids</a>
+                    {e.bidSystem && typeof e.bidSystem === 'string' && e.bidSystem.startsWith('http') && (
+                      <a href={e.bidSystem} target="_blank" rel="noopener noreferrer" style={{ padding:'4px 10px',borderRadius:5,background:'#2D6A4F10',color:'#2D6A4F',fontSize:10,fontWeight:700,textDecoration:'none',border:'1px solid #2D6A4F20' }}>eBid System</a>
+                    )}
+                    {e.bidSystem && typeof e.bidSystem === 'string' && !e.bidSystem.startsWith('http') && (
+                      <span style={{ padding:'4px 10px',borderRadius:5,background:'#7B2D8E10',color:'#7B2D8E',fontSize:10,fontWeight:700 }}>{e.bidSystem}</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ─── DISTRICTS ─── */}
+        {tab === 'districts' && (
+          <div>
+            <div style={{ display:'flex',gap:16,marginBottom:16,alignItems:'flex-end',flexWrap:'wrap' }}>
+              <div>
+                <label style={{ fontSize:10,fontWeight:700,color:'#888',letterSpacing:'0.08em',textTransform:'uppercase',display:'block',marginBottom:4 }}>Filter by ESC Region</label>
+                <select value={escFilter} onChange={e=>setEscFilter(Number(e.target.value))} style={{ padding:'7px 12px',borderRadius:6,fontSize:13,border:'1px solid #D0CCC4',fontFamily:'inherit',background:'#FFF' }}>
+                  <option value={0}>All Regions ({DISTRICTS.length} districts)</option>
+                  {ESC_DATA.map(e=><option key={e.id} value={e.id}>Region {e.id} — {e.city}</option>)}
+                </select>
+              </div>
+              <div style={{ flex:1,minWidth:200 }}>
+                <label style={{ fontSize:10,fontWeight:700,color:'#888',letterSpacing:'0.08em',textTransform:'uppercase',display:'block',marginBottom:4 }}>Search District Name</label>
+                <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Type district name..." style={{ width:'100%',padding:'7px 12px',fontSize:13,border:'1px solid #D0CCC4',borderRadius:6,fontFamily:'inherit',background:'#FFF',boxSizing:'border-box' }}/>
+              </div>
+              <span style={{ fontSize:12,color:'#888',fontStyle:'italic' }}>Showing {filteredDistricts.length} districts</span>
+            </div>
+            <p style={{ fontSize:12,color:'#999',marginBottom:12 }}>Texas has 1,208 school districts. Below are the {DISTRICTS.length} largest by enrollment. Most ISD purchasing pages follow the pattern: [district website]/departments/purchasing. For the full list of all 1,208 districts, visit <a href="https://tealprod.tea.state.tx.us/Tea.AskTed.Web/Forms/tsdindex2025.aspx" target="_blank" rel="noopener noreferrer" style={{ color:'#1B4965' }}>TEA's AskTED School Directory</a>.</p>
+            <div style={{ display:'flex',flexDirection:'column',gap:6 }}>
+              {filteredDistricts.map(d => (
+                <div key={d.name} style={{ background:'#FFF',borderRadius:8,padding:'10px 16px',border:d.priority?'1px solid #C5A76830':'1px solid #E8E4DC',borderLeft:d.priority?'3px solid #C5A768':'3px solid #DDD',display:'flex',justifyContent:'space-between',alignItems:'center',gap:12 }}>
+                  <div style={{ flex:1,display:'flex',alignItems:'center',gap:10 }}>
+                    {d.priority && <span style={{ fontSize:8,fontWeight:800,color:'#A8893A',background:'#C5A76812',padding:'1px 5px',borderRadius:3 }}>★</span>}
+                    <span style={{ fontSize:13,fontWeight:700 }}>{d.name}</span>
+                    <span style={{ fontSize:11,color:'#888',fontFamily:"'DM Mono',monospace" }}>ESC {d.esc}</span>
+                  </div>
+                  <div style={{ display:'flex',gap:12,alignItems:'center' }}>
+                    <span style={{ fontSize:11,color:'#888' }}>{d.enrollment?.toLocaleString()} students</span>
+                    <span style={{ fontSize:11,color:'#2D6A4F',fontWeight:700 }}>{d.budget}</span>
+                    <a href={d.url} target="_blank" rel="noopener noreferrer" style={{ padding:'3px 8px',borderRadius:4,background:'#1B496510',color:'#1B4965',fontSize:10,fontWeight:700,textDecoration:'none' }}>Site</a>
+                    <a href={d.url+(d.purchasing||'/departments/purchasing')} target="_blank" rel="noopener noreferrer" style={{ padding:'3px 8px',borderRadius:4,background:'#C5A76810',color:'#A8893A',fontSize:10,fontWeight:700,textDecoration:'none' }}>Purchasing</a>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ─── CHARTERS ─── */}
+        {tab === 'charters' && (
+          <div>
+            <p style={{ fontSize:14,color:'#666',marginBottom:16 }}>Texas has 188 open-enrollment charter school operators across 958 campuses serving 8% of public school students. Below are the largest networks. Charter schools follow the same Texas Education Code §44.031 procurement requirements as traditional ISDs.</p>
+            <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:10 }}>
+              {CHARTER_NETWORKS.sort((a,b)=>b.enrollment-a.enrollment).map(c => (
+                <div key={c.name} style={{ background:'#FFF',borderRadius:10,padding:'14px 18px',border:'1px solid #E0DCD4' }}>
+                  <div style={{ display:'flex',justifyContent:'space-between',alignItems:'flex-start' }}>
+                    <h4 style={{ fontSize:14,fontWeight:700,margin:0,color:'#1A1A1A' }}>{c.name}</h4>
+                    <a href={c.url} target="_blank" rel="noopener noreferrer" style={{ padding:'3px 10px',borderRadius:5,background:'#1B496510',color:'#1B4965',fontSize:10,fontWeight:700,textDecoration:'none' }}>Website →</a>
+                  </div>
+                  <div style={{ display:'flex',gap:12,marginTop:6,fontSize:11,color:'#888' }}>
+                    <span style={{ color:'#2D6A4F',fontWeight:700 }}>{c.enrollment?.toLocaleString()} students</span>
+                    <span>{c.campuses} campuses</span>
+                  </div>
+                  <p style={{ fontSize:11,color:'#999',margin:'4px 0 0' }}>📍 {c.cities}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ─── AI SCANNER ─── */}
+        {tab === 'scan' && (
+          <div>
+            {!apiKey && (
+              <div style={{ background:'#FFF3CD',borderRadius:10,padding:'14px 20px',border:'1px solid #E0C068',marginBottom:16,display:'flex',alignItems:'center',gap:12 }}>
+                <span style={{ fontSize:20 }}>🔑</span>
+                <div>
+                  <p style={{ margin:0,fontSize:13,fontWeight:600,color:'#856404' }}>API Key Required for AI Scanner</p>
+                  <p style={{ margin:'4px 0 0',fontSize:12,color:'#856404' }}>Click <strong>⚙️ API Settings</strong> in the header and paste your Anthropic API key. Get one free at <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer" style={{ color:'#1B4965',fontWeight:600 }}>console.anthropic.com</a>. All other tabs work without a key.</p>
+                </div>
+                <button onClick={()=>setShowSettings(true)} style={{ padding:'6px 14px',borderRadius:6,border:'none',background:'#1B4965',color:'#FFF',fontSize:11,fontWeight:700,cursor:'pointer',whiteSpace:'nowrap' }}>Open Settings</button>
+              </div>
+            )}
+            <div style={{ background:'#FFF',borderRadius:12,padding:20,border:'1px solid #E0DCD4',marginBottom:20 }}>
+              <div style={{ display:'flex',gap:12,alignItems:'flex-end',flexWrap:'wrap' }}>
+                <div style={{ flex:1,minWidth:280 }}>
+                  <label style={{ fontSize:10,fontWeight:700,color:'#888',letterSpacing:'0.08em',textTransform:'uppercase',display:'block',marginBottom:4 }}>Custom Search</label>
+                  <input value={customQ} onChange={e=>setCustomQ(e.target.value)} onKeyDown={e=>e.key==='Enter'&&customQ.trim()&&doSearch([customQ])} placeholder='e.g., "Fort Worth ISD RFP curriculum 2026"' style={{ width:'100%',padding:'9px 14px',fontSize:13,border:'1px solid #D0CCC4',borderRadius:8,fontFamily:'inherit',background:'#FAFAF8',boxSizing:'border-box' }}/>
+                </div>
+                <button onClick={()=>customQ.trim()&&doSearch([customQ])} disabled={isSearching||!customQ.trim()||!apiKey} style={{ padding:'9px 18px',borderRadius:8,border:'none',background:(isSearching||!apiKey)?'#AAA':'#1B4965',color:'#FFF',fontSize:12,fontWeight:700,cursor:(isSearching||!apiKey)?'not-allowed':'pointer' }}>Search</button>
+                <button onClick={()=>doSearch(SCAN_QUERIES)} disabled={isSearching||!apiKey} style={{ padding:'9px 18px',borderRadius:8,border:'none',background:(isSearching||!apiKey)?'#AAA':'linear-gradient(135deg,#C5A768,#A8893A)',color:(isSearching||!apiKey)?'#FFF':'#0A1628',fontSize:12,fontWeight:800,cursor:(isSearching||!apiKey)?'not-allowed':'pointer' }}>
+                  {isSearching?`Scanning (${progress.cur}/${progress.tot})...`:'⚡ Full Scan (13 searches incl. Bonfire)'}
+                </button>
+                {isSearching && <button onClick={()=>{abortRef.current=true}} style={{ padding:'9px 14px',borderRadius:8,border:'1px solid #C44536',background:'transparent',color:'#C44536',fontSize:12,fontWeight:600,cursor:'pointer' }}>Stop</button>}
+              </div>
+              {isSearching && (
+                <div style={{ marginTop:12 }}>
+                  <div style={{ height:4,borderRadius:2,background:'#E8E8E8',overflow:'hidden' }}>
+                    <div style={{ height:'100%',borderRadius:2,background:'linear-gradient(90deg,#1B4965,#C5A768)',width:`${(progress.cur/progress.tot)*100}%`,transition:'width 0.3s' }}/>
+                  </div>
+                  <p style={{ fontSize:11,color:'#888',marginTop:4,fontFamily:"'DM Mono',monospace" }}>{progress.msg}</p>
+                </div>
+              )}
+            </div>
+
+            {rfps.length > 0 && (
+              <div style={{ display:'flex',gap:12,marginBottom:16,alignItems:'center' }}>
+                <select value={filterCap} onChange={e=>setFilterCap(e.target.value)} style={{ padding:'6px 10px',borderRadius:6,fontSize:12,border:'1px solid #D0CCC4',fontFamily:'inherit',background:'#FFF' }}>
+                  <option value="ALL">All Capabilities</option>
+                  {Object.entries(SAFAL_CAPABILITIES).map(([k,v])=><option key={k} value={k}>{v.label}</option>)}
+                </select>
+                <span style={{ fontSize:12,color:'#888' }}>{filteredRFPs.length} results</span>
+                <div style={{ marginLeft:'auto',display:'flex',gap:8 }}>
+                  <span style={{ fontSize:11,fontWeight:700,color:'#2D6A4F' }}>HIGH: {rfps.filter(r=>r.score>=70).length}</span>
+                  <span style={{ fontSize:11,fontWeight:700,color:'#E07A2F' }}>MED: {rfps.filter(r=>r.score>=40&&r.score<70).length}</span>
+                  <span style={{ fontSize:11,fontWeight:700,color:'#999' }}>LOW: {rfps.filter(r=>r.score<40).length}</span>
+                </div>
+              </div>
+            )}
+
+            {filteredRFPs.map((r,i) => (
+              <div key={r.id+i} onClick={()=>setSelectedRFP(selectedRFP?.id===r.id?null:r)} style={{ background:'#FFF',borderRadius:10,padding:'14px 18px',border:r.score>=70?'1px solid #2D6A4F30':'1px solid #E0DCD4',borderLeft:r.score>=70?'4px solid #2D6A4F':r.score>=40?'4px solid #E07A2F':'4px solid #CCC',marginBottom:8,cursor:'pointer',transition:'box-shadow 0.2s',boxShadow:selectedRFP?.id===r.id?'0 4px 16px rgba(0,0,0,0.08)':'none' }}>
+                <div style={{ display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:16 }}>
+                  <div style={{ flex:1 }}>
+                    <div style={{ display:'flex',alignItems:'center',gap:8,marginBottom:4 }}>
+                      {r.score>=70&&<span style={{ background:'#2D6A4F',color:'#FFF',fontSize:8,fontWeight:800,padding:'2px 6px',borderRadius:3 }}>★ PRIORITY</span>}
+                      <h4 style={{ fontSize:14,fontWeight:700,margin:0 }}>{r.title}</h4>
+                    </div>
+                    <div style={{ display:'flex',gap:12,fontSize:11,color:'#888',marginBottom:6,flexWrap:'wrap' }}>
+                      {r.source&&<span>📍 {r.source}</span>}
+                      {r.deadline&&<span style={{ color:'#C44536',fontWeight:600 }}>📅 {r.deadline}</span>}
+                      {r.value&&<span style={{ color:'#2D6A4F',fontWeight:600 }}>💰 {r.value}</span>}
+                    </div>
+                    <div style={{ display:'flex',gap:4,flexWrap:'wrap' }}>{r.caps.map(c=><Badge key={c.key} cap={c}/>)}</div>
+                  </div>
+                  <ScoreMeter score={r.score}/>
+                </div>
+                {selectedRFP?.id===r.id&&(
+                  <div style={{ marginTop:12,paddingTop:12,borderTop:'1px solid #EEE' }}>
+                    <p style={{ fontSize:12,color:'#555',lineHeight:1.5,margin:0,whiteSpace:'pre-wrap' }}>{r.desc?.trim()||r.raw?.substring(0,600)||'No details.'}</p>
+                  </div>
+                )}
+              </div>
+            ))}
+
+            {searchDone && rfps.length===0 && !isSearching && (
+              <div style={{ background:'#FFF',borderRadius:12,padding:32,textAlign:'center',border:'1px solid #E0DCD4' }}>
+                <div style={{ fontSize:40,marginBottom:8 }}>📋</div>
+                <p style={{ fontSize:14,color:'#888' }}>No matching RFPs found in this scan. Try different search terms or check the procurement portals directly.</p>
+              </div>
+            )}
+
+            {!searchDone && !isSearching && rfps.length===0 && (
+              <div style={{ background:'#FFF',borderRadius:12,padding:24,border:'1px solid #E0DCD4' }}>
+                <h3 style={{ fontSize:16,fontWeight:800,color:'#1B4965',margin:'0 0 8px',fontFamily:"'Playfair Display',serif" }}>How This Works</h3>
+                <p style={{ fontSize:13,color:'#666',lineHeight:1.6,margin:0 }}>
+                  The AI Scanner runs live web searches to find active RFPs from Texas ISDs, ESCs, charter schools, and Bonfire portals. Results are automatically matched against Safal's 9 capability areas (HQIM, PD, Evaluation, TA, Grants Mgmt, Workforce/CTE, EdTech, SPED, School Improvement) and scored for alignment. Hit "Full Scan" to search across 13 targeted queries including Bonfire-specific searches, or enter a custom search for a specific district or topic.
+                </p>
+                <div style={{ display:'flex',gap:6,flexWrap:'wrap',marginTop:12 }}>{Object.entries(SAFAL_CAPABILITIES).map(([k,v])=><Badge key={k} cap={v}/>)}</div>
+              </div>
+            )}
+
+            {rawResults.length > 0 && (
+              <details style={{ marginTop:16 }}>
+                <summary style={{ fontSize:12,fontWeight:700,color:'#888',cursor:'pointer',padding:'8px 0' }}>📄 Raw Search Results ({rawResults.length})</summary>
+                <div style={{ background:'#FFF',borderRadius:8,padding:16,border:'1px solid #E0DCD4',maxHeight:300,overflow:'auto' }}>
+                  {rawResults.map((r,i)=>(
+                    <div key={i} style={{ marginBottom:16 }}>
+                      <div style={{ fontSize:10,fontWeight:700,color:'#1B4965',fontFamily:"'DM Mono',monospace",marginBottom:4 }}>Q{i+1}: {r.q}</div>
+                      <pre style={{ fontSize:11,color:'#555',whiteSpace:'pre-wrap',lineHeight:1.4,margin:0,borderBottom:'1px solid #F0F0F0',paddingBottom:8 }}>{r.r}</pre>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
